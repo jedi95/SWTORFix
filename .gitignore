@@ -1,0 +1,12 @@
+# Visual Studio
+.vs/
+/SWTORFix/x64/
+/SWTORFix/Win32/
+/SWTORFix/Debug/
+/SWTORFix/Release/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+ipch/
