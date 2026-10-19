@@ -1,0 +1,9 @@
+; Copy to SWTORFix.ini beside SWTORFix.dll to override the defaults.
+; A missing file, section or key leaves that job enabled.
+
+[jobs]
+; Hook ChangeDisplaySettingsEx so the client does not probe display modes.
+BlockDisplayChanges=1
+
+; Complete teleport-sized motion in a single frame (fixes teleport desync).
+TeleportSnap=1
