@@ -1,0 +1,12 @@
+# Visual Studio
+.vs/
+x64/
+Win32/
+Debug/
+Release/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+ipch/
