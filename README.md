@@ -71,8 +71,8 @@ and faulting on the first aligned SSE spill.
 
 ## Build
 
-Visual Studio 2022, x64. Detours is vendored under `SWTORFix/lib` and
-`SWTORFix/include`.
+Visual Studio with the **v145** platform toolset, x64. Detours is vendored under
+`SWTORFix/lib` and `SWTORFix/include`.
 
 ```
 msbuild SWTORFix.sln /p:Configuration=Release /p:Platform=x64
@@ -86,3 +86,7 @@ it by name from its own directory.
 The prologue check means an updated client fails closed: the hook simply does
 not install, and the game runs unpatched. Nothing is patched in memory if the
 bytes do not match.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
