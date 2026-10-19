@@ -1,8 +1,11 @@
 # SWTORFix
 
 Client-side fixes for the SWTOR client, injected into `swtor.exe` by
-[SWTORWrapper](https://git.jedi95.com/jedi95/SWTORWrapper). Built as an x64 DLL
+[SWTORWrapper](https://github.com/jedi95/SWTORWrapper). Built as an x64 DLL
 that `SWTORWrapper.exe` loads with `LoadLibraryA` once the game process appears.
+
+**Exactly what the patch does and how it works, with the disassembly, the measurements and
+what it deliberately does not touch: [HOW-IT-WORKS.md](HOW-IT-WORKS.md).**
 
 ## Jobs
 
