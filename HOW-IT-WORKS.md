@@ -98,7 +98,7 @@ budget in a single frame instead of spreading it across several:
 
 ```c
 if (flags & 0x00010000)                 // the same gate the original function uses
-    if (velocity.x² + velocity.y² + velocity.z² > 25.0)
+    if (velocity.x² + velocity.y² + velocity.z² > 100.0)   // 10 units/s squared
         if (dt < budget)
             dt = budget;                // consume the whole budget this frame
 ```
@@ -107,16 +107,32 @@ With `dt = budget`, the original arithmetic evaluates `base + budget * velocity`
 destination the client was already given. The move completes in one frame, so there is no
 window left in which it can be cut short.
 
-### Why the threshold is 5.0 units/s
+### Why the threshold is 10 units/s
+
+The threshold has to separate a teleport from every other fast motion in the game, and the only
+other one measured is Bestia's Force Charge — the leap a boss uses to close on a kiting tank.
 
 | motion | velocity |
 |---|---|
 | walking | ~0.4 units/s (4 m/s) |
-| charge-type abilities | between walking and teleporting |
-| teleport | ~16.6 units/s (166 m/s) |
+| **Bestia's Force Charge** | **1.5–5.8 units/s** (14.8–57.9 m/s), 111 casts |
+| threshold | **10 units/s** (100 m/s) |
+| teleport | ~16.6 units/s (166 m/s), measured on an 8 m move |
 
-5.0 units/s (50 m/s) sits clear of normal movement and of charge abilities, and well below
-teleport velocity, so only teleport-scale motion is affected.
+The charge numbers come from a council log: 111 casts, each 10–38 m over 0.49–0.83 s, measured
+as distance over the activation-to-damage interval. Speed scales with distance, so the long
+charges — the ones that happen when the tank kites — are the fast ones.
+
+At the original 5.0 units/s, **26 of those 111 casts (23%) were caught** and snapped mid-arc
+while the other 77 played normally. That is exactly the intermittent stutter reported in play:
+some leaps choppy, most smooth, and worse the further the tank ran. 10 sits above every charge
+observed and below every teleport, with roughly equal margin on both sides.
+
+The margin on the teleport side is larger than the 8 m figure suggests: the council heptagon
+spans 19.5 m between adjacent vertices and 35–44 m across, and those teleports are visually
+instant, so the velocity there is at least 16.6 units/s.
+
+`[teleport] MinVelocity` overrides the default without a rebuild.
 
 ### What is actually modified
 
