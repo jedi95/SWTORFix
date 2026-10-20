@@ -7,3 +7,11 @@ BlockDisplayChanges=1
 
 ; Complete teleport-sized motion in a single frame (fixes teleport desync).
 TeleportSnap=1
+
+; Flush the combat log more often than the client's built-in 3 seconds.
+LogFlush=1
+
+[log]
+; Combat log flush interval, in milliseconds. Clamped to 100..10000.
+; The client's own default is 3000.
+FlushMillis=1000

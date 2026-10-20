@@ -5,6 +5,10 @@
 //     [jobs]
 //     BlockDisplayChanges=1
 //     TeleportSnap=1
+//     LogFlush=1
+//
+//     [log]
+//     FlushMillis=1000
 //
 // A missing file, missing section or missing key leaves that job enabled.
 //
@@ -27,9 +31,11 @@ struct Config
 {
     bool blockDisplayChanges;
     bool teleportSnap;
+    bool logFlush;
+    float logFlushSeconds;
 };
 
-Config g_config = { true, true };
+Config g_config = { true, true, true, 1.0f };
 
 void LoadConfig(HMODULE self)
 {
@@ -52,6 +58,15 @@ void LoadConfig(HMODULE self)
         GetPrivateProfileIntA("jobs", "BlockDisplayChanges", 1, path) != 0;
     g_config.teleportSnap =
         GetPrivateProfileIntA("jobs", "TeleportSnap", 1, path) != 0;
+    g_config.logFlush =
+        GetPrivateProfileIntA("jobs", "LogFlush", 1, path) != 0;
+
+    // Clamp to a sane range: below 100 ms the file is being flushed constantly,
+    // above 10 s the job does nothing useful.
+    int flushMillis = GetPrivateProfileIntA("log", "FlushMillis", 1000, path);
+    if (flushMillis < 100) flushMillis = 100;
+    if (flushMillis > 10000) flushMillis = 10000;
+    g_config.logFlushSeconds = flushMillis / 1000.0f;
 }
 
 void Report(const char* what, LONG attached, LONG committed)
@@ -86,6 +101,148 @@ void InstallBlockDisplayChanges()
     LONG committed = DetourTransactionCommit();
     if (attached != NO_ERROR || committed != NO_ERROR)
         Report("BlockDisplayChanges", attached, committed);
+}
+
+// ---------------------------------------------------------------------------
+// Job: LogFlush
+//
+// The combat log is written to a FILE* held in a small global (DAT_141bae060):
+//
+//     +0x00  FILE*  file
+//     +0x08  float  flush_timer        seconds remaining
+//
+// The main loop decrements the timer by the frame delta and, when it expires,
+// flushes and resets it:
+//
+//     140530a2d  movss   xmm0, [rbx+8]            ; timer
+//     140530a32  subss   xmm0, [frame delta]
+//     140530a3a  movss   [rbx+8], xmm0
+//     140530a3f  comiss  xmm6, xmm0
+//     140530a42  jb      skip                     ; still counting down
+//     140530a4c  call    [fflush]
+//     140530a52  mov     dword ptr [rbx+8], 3.0f  ; <-- the reset constant
+//
+// The reset constant *is* the interval, and it is a plain float immediate:
+//
+//     c7 43 08 00 00 40 40        mov dword ptr [rbx+8], 3.0f
+//
+// Changing only the four immediate bytes changes how often the log is flushed.
+// The instruction length and encoding are untouched, and the CRT still flushes
+// on its own when the 4096-byte buffer fills - this only reduces the worst-case
+// latency for anything parsing the log live (StarParse and similar).
+//
+// This job never writes blind: it verifies the full instruction at the known
+// RVA, falls back to a scan for a unique match, refuses on absent or ambiguous
+// matches, and reads the value back afterwards.
+// ---------------------------------------------------------------------------
+const uintptr_t RVA_LOG_FLUSH = 0x530A52;
+
+const unsigned char LOG_FLUSH_INSN[7] = {
+    0xC7, 0x43, 0x08, 0x00, 0x00, 0x40, 0x40    // mov dword ptr [rbx+8], 3.0f
+};
+
+const size_t LOG_FLUSH_IMM = 3;                 // float immediate inside the instruction
+
+struct TextRange { uintptr_t begin; size_t size; };
+
+bool GetTextRange(uintptr_t base, TextRange& out)
+{
+    auto* dos = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto* nt = reinterpret_cast<PIMAGE_NT_HEADERS>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+
+    auto* section = IMAGE_FIRST_SECTION(nt);
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
+        if (section->Characteristics & IMAGE_SCN_MEM_EXECUTE) {
+            out.begin = base + section->VirtualAddress;
+            out.size  = section->Misc.VirtualSize;
+            return true;
+        }
+    }
+    return false;
+}
+
+void InstallLogFlush()
+{
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!base) {
+        OutputDebugStringA("[SWTORFix] LogFlush: no module base\n");
+        return;
+    }
+
+    unsigned char* target = nullptr;
+
+    // 1. Known location.
+    auto* candidate = reinterpret_cast<unsigned char*>(base + RVA_LOG_FLUSH);
+    bool knownGood = true;
+    __try {
+        for (size_t i = 0; i < sizeof(LOG_FLUSH_INSN); ++i) {
+            if (candidate[i] != LOG_FLUSH_INSN[i]) { knownGood = false; break; }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { knownGood = false; }
+
+    if (knownGood) {
+        target = candidate;
+    } else {
+        // 2. Fall back to a pattern scan, accepting only a single unique hit.
+        TextRange text{};
+        if (!GetTextRange(base, text)) {
+            OutputDebugStringA("[SWTORFix] LogFlush: no executable section, not installed\n");
+            return;
+        }
+
+        int hits = 0;
+        unsigned char* found = nullptr;
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(text.begin);
+        for (size_t i = 0; i + sizeof(LOG_FLUSH_INSN) <= text.size; ++i) {
+            if (p[i] != LOG_FLUSH_INSN[0]) continue;
+            bool match = true;
+            for (size_t k = 1; k < sizeof(LOG_FLUSH_INSN); ++k) {
+                if (p[i + k] != LOG_FLUSH_INSN[k]) { match = false; break; }
+            }
+            if (!match) continue;
+            if (++hits > 1) break;
+            found = const_cast<unsigned char*>(p + i);
+        }
+
+        if (hits == 0) {
+            OutputDebugStringA("[SWTORFix] LogFlush: pattern not found, not installed\n");
+            return;
+        }
+        if (hits > 1) {
+            OutputDebugStringA("[SWTORFix] LogFlush: pattern ambiguous, not installed\n");
+            return;
+        }
+        target = found;
+    }
+
+    float* immediate = reinterpret_cast<float*>(target + LOG_FLUSH_IMM);
+    const float wanted = g_config.logFlushSeconds;
+
+    __try {
+        if (*immediate == wanted)
+            return;                              // already at the requested interval
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+
+    // 3. Patch the immediate, restore protection, flush the icache, verify.
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(immediate, sizeof(float), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        OutputDebugStringA("[SWTORFix] LogFlush: VirtualProtect failed\n");
+        return;
+    }
+
+    *immediate = wanted;
+    VirtualProtect(immediate, sizeof(float), oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), target, sizeof(LOG_FLUSH_INSN));
+
+    if (*immediate != wanted) {
+        OutputDebugStringA("[SWTORFix] LogFlush: read-back mismatch\n");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +371,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 
         if (g_config.blockDisplayChanges)
             InstallBlockDisplayChanges();
+
+        if (g_config.logFlush)
+            InstallLogFlush();
 
         if (g_config.teleportSnap)
             InstallTeleportSnap();

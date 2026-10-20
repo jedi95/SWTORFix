@@ -15,6 +15,10 @@ Each job can be switched off in `SWTORFix.ini`, placed **beside the DLL**:
 [jobs]
 BlockDisplayChanges=1
 TeleportSnap=1
+LogFlush=1
+
+[log]
+FlushMillis=1000
 ```
 
 A missing file, missing section or missing key leaves that job **enabled**, so
@@ -24,6 +28,7 @@ the DLL works with no configuration at all. Set a value to `0` to disable it.
 |---|---|---|
 | `BlockDisplayChanges` | on | Hooks `ChangeDisplaySettingsEx` and reports success without changing the display mode. The client probes display modes at startup; this skips that. |
 | `TeleportSnap` | on | Fixes teleport desync. See below. |
+| `LogFlush` | on | Shortens the combat log flush timer so live parsers see events sooner. Interval in `[log] FlushMillis`, default `1000`, clamped to 100–10000. |
 
 Nothing is written to disk. Failures go to `OutputDebugString` only, visible in
 DebugView if you want them.

@@ -1,4 +1,4 @@
-# How the teleport patch works
+# How SWTORFix works
 
 This document describes exactly what `SWTORFix.dll` changes in the client, why, and what it
 does not do. It is written so that anyone — including the game's own developers — can verify
@@ -123,17 +123,68 @@ teleport velocity, so only teleport-scale motion is affected.
 One value: the `dt` argument, on the stack, for the duration of one call. The function then
 runs unmodified and writes the position itself, exactly as it always does.
 
-## What the patch does not do
+## Job: LogFlush
+
+The client flushes its combat log on a countdown rather than on every write. The timer lives in
+a small global (`DAT_141bae060`):
+
+```
++0x00  FILE*  file
++0x08  float  flush_timer        seconds remaining
+```
+
+The main loop decrements it by the frame delta and, when it expires, flushes and resets it:
+
+```asm
+140530a2d  movss   xmm0, [rbx+8]            ; timer
+140530a32  subss   xmm0, [frame delta]
+140530a3a  movss   [rbx+8], xmm0
+140530a3f  comiss  xmm6, xmm0
+140530a42  jb      skip                     ; still counting down
+140530a4c  call    [fflush]
+140530a52  mov     dword ptr [rbx+8], 3.0f  ; reset
+```
+
+The reset constant **is** the interval, and it is a plain float immediate:
+
+```
+c7 43 08 00 00 40 40        mov dword ptr [rbx+8], 3.0f
+```
+
+Changing only those four immediate bytes changes how often the log reaches disk. The default in
+`SWTORFix.ini` is 1000 ms, i.e. the immediate becomes `1.0f` (`00 00 80 3f`).
+
+Nothing is lost either way — the data is in the file's buffer regardless, and the CRT still
+flushes when its 4096-byte buffer fills. This only reduces the worst-case delay before something
+parsing the log live can see an event, from about 3 seconds to about 1.
+
+The patch checks the full 7-byte instruction at RVA `0x530A52`, falls back to a scan for a
+single unique match, refuses on absent or ambiguous matches, and reads the value back after
+writing it.
+
+## Job: BlockDisplayChanges
+
+The client calls `ChangeDisplaySettingsEx` while enumerating display modes. This hook returns
+`DISP_CHANGE_SUCCESSFUL` without doing anything, so the client proceeds with whatever mode it
+was launched in.
+
+It exists because that probing path was slow — and historically crashed — on some drivers. It
+changes no display state and is a no-op unless the client asks to change the mode.
+
+## What the DLL does not do
 
 - **No network traffic.** It does not send, modify, delay or inspect a single packet.
-- **No new information.** The destination is already in the client's motion state; the patch
-  only stops the client from stopping early on the way there.
+- **No new information.** The teleport destination is already in the client's motion state; the
+  patch only stops the client from stopping early on the way there.
 - **No server-side effect.** Range checks, line of sight, ability legality and combat
-  resolution are server-side and untouched. This is why the fix is cosmetic in the strict
-  sense: it makes the client draw what the server already told it.
-- **No writes to game state.** It does not write positions, velocities, budgets or flags. It
-  changes one argument and calls through.
-- **No bypass of any check.** It hooks one function, not an anti-cheat or integrity routine.
+  resolution are server-side and untouched.
+- **No writes to game state.** The teleport hook changes one argument on the stack; the log
+  hook changes one float constant in the client's own timer. Neither writes positions,
+  velocities, budgets, flags or log contents.
+- **No changes to the log itself.** LogFlush changes when the file is flushed, not what is
+  written. Not a line is added, removed, reordered or rewritten.
+- **No bypass of any check.** It hooks one motion function and one display API, and patches one
+  constant. It does not touch an anti-cheat or integrity routine.
 
 ## Safety
 
