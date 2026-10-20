@@ -17,7 +17,7 @@ LogFlush=1
 FlushMillis=1000
 
 [teleport]
-; Velocity above which motion is treated as a teleport, in units/s (1 unit = 0.1 m).
+; Velocity above which motion is treated as a teleport, in units/s (1 unit = 10 m).
 ; Teleports measure ~16.6; Bestia's Force Charge peaks at 5.8 over 111 samples.
 ; Clamped to 1..50. Lower this if teleports stop being caught.
 MinVelocity=10

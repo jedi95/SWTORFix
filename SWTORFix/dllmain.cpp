@@ -70,7 +70,8 @@ void LoadConfig(HMODULE self)
     if (flushMillis > 10000) flushMillis = 10000;
     g_config.logFlushSeconds = flushMillis / 1000.0f;
 
-    // Teleport velocity threshold, in memory units per second (1 unit = 0.1 m).
+    // Teleport velocity threshold, in memory units per second (1 unit = 10 m; the
+    // client stores positions at one tenth of the combat log's scale).
     // Teleports measure ~16.6 units/s. Measured Force Charge leaps top out at
     // 5.8 units/s (111 samples, 14.8-57.9 m/s over 0.49-0.83 s), so the default
     // of 10 sits clear above every leap and well under a teleport. Lower it if

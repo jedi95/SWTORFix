@@ -53,7 +53,9 @@ pos = base + dt * [actor+0x408..0x410]
 - `[actor+0x350]` is a **time budget** for the current move, in seconds. It counts down each
   call: `[actor+0x350] -= dt`.
 - `[actor+0x408..0x410]` is a **velocity** in memory units per second. One memory unit is
-  0.1 m of world distance.
+  **10 m** of world distance: the client stores positions at one tenth of the combat log's
+  scale, so an 8 m gap between floor squares is 0.8 units, and the captured 16.61 units/s is
+  166 m/s.
 - `base` comes from a virtual call on the actor; it is the position the move started from.
 
 ## What a teleport actually looks like
