@@ -19,6 +19,12 @@ LogFlush=1
 
 [log]
 FlushMillis=1000
+
+[teleport]
+MinVelocity=5
+
+[debug]
+LogFires=0
 ```
 
 A missing file, missing section or missing key leaves that job **enabled**, so
@@ -60,8 +66,10 @@ Measured on solo Dread Master Tyrans, same fight, same analysis:
 | worst residual | 4.23 m | **0.00 m** |
 
 Threshold is 5.0 units/s (50 m/s): walking is ~0.4 (4 m/s), teleports ~16.6
-(166 m/s), so it separates them with margin and stays clear of charge-type
-abilities.
+(166 m/s), so it separates them with margin. If another fast motion — a charge or
+a leap — is being caught and looks choppy, raise `[teleport] MinVelocity`. Setting
+`[debug] LogFires=1` reports every snap decision with the actor's flags and
+velocity through `OutputDebugString`, so you can see exactly what is being caught.
 
 The hook validates the first 16 bytes of the target before attaching and refuses
 to install on an unrecognised client:

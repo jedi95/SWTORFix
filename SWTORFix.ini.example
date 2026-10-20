@@ -15,3 +15,14 @@ LogFlush=1
 ; Combat log flush interval, in milliseconds. Clamped to 100..10000.
 ; The client's own default is 3000.
 FlushMillis=1000
+
+[teleport]
+; Velocity above which motion is treated as a teleport, in units/s (1 unit = 0.1 m).
+; Walking is ~0.4, teleports measure ~16.6. Clamped to 1..50.
+; Raise this if a charge or leap is being caught and looks choppy.
+MinVelocity=5
+
+[debug]
+; Report every snap decision through OutputDebugString, visible in DebugView.
+; Off by default; turn on to check which motions the patch is firing on.
+LogFires=0

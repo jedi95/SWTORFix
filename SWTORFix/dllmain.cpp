@@ -33,9 +33,11 @@ struct Config
     bool teleportSnap;
     bool logFlush;
     float logFlushSeconds;
+    float motionThresholdSq;      // squared velocity threshold, memory units/s
+    bool logMotionFires;          // diagnostics: report every snap decision
 };
 
-Config g_config = { true, true, true, 1.0f };
+Config g_config = { true, true, true, 1.0f, 25.0f, false };
 
 void LoadConfig(HMODULE self)
 {
@@ -67,6 +69,17 @@ void LoadConfig(HMODULE self)
     if (flushMillis < 100) flushMillis = 100;
     if (flushMillis > 10000) flushMillis = 10000;
     g_config.logFlushSeconds = flushMillis / 1000.0f;
+
+    // Teleport velocity threshold, in memory units per second (1 unit = 0.1 m).
+    // Walking is ~0.4 and teleports measure ~16.6; the default of 5 leaves room
+    // on both sides. Raise it if another fast motion (a charge or leap) is being
+    // caught and looks choppy.
+    int minVelocity = GetPrivateProfileIntA("teleport", "MinVelocity", 5, path);
+    if (minVelocity < 1) minVelocity = 1;
+    if (minVelocity > 50) minVelocity = 50;
+    g_config.motionThresholdSq = static_cast<float>(minVelocity) * static_cast<float>(minVelocity);
+
+    g_config.logMotionFires = GetPrivateProfileIntA("debug", "LogFires", 0, path) != 0;
 }
 
 void Report(const char* what, LONG attached, LONG committed)
@@ -278,13 +291,21 @@ const size_t VELOCITY_OFFSET = 0x408;
 
 const uint32_t MOTION_FLAG = 0x00010000;      // the gate the original function uses
 
-// Walking measures ~0.4 units/s (4 m/s) and teleports ~16.6 (166 m/s), so 5.0
-// units/s (50 m/s) separates them with margin at both ends and stays clear of
-// charge-type abilities.
-const float VELOCITY_THRESHOLD_SQ = 25.0f;
+const size_t MOTION_FLAGS_OFFSET = 0x420;     // per-actor motion mode bits
 
 typedef void(__fastcall* MotionFn)(void*, float);
 MotionFn g_originalMotion = nullptr;
+
+void LogMotionFire(void* self, uint32_t flags2F8, uint32_t flags420,
+                   const float* v, float lengthSq, float budget)
+{
+    char buf[280];
+    sprintf_s(buf, sizeof(buf),
+              "[SWTORFix] snap self=%p f2F8=%08x f420=%08x v=(%.3f,%.3f,%.3f) "
+              "|v|^2=%.3f budget=%.4f\n",
+              self, flags2F8, flags420, v[0], v[1], v[2], lengthSq, budget);
+    OutputDebugStringA(buf);
+}
 
 void __fastcall Hook_Motion(void* self, float dt)
 {
@@ -302,12 +323,20 @@ void __fastcall Hook_Motion(void* self, float dt)
                                  + velocity[1] * velocity[1]
                                  + velocity[2] * velocity[2];
 
-            if (lengthSq > VELOCITY_THRESHOLD_SQ)
+            if (lengthSq > g_config.motionThresholdSq)
             {
                 const float budget = *reinterpret_cast<const float*>(
                                          static_cast<char*>(self) + BUDGET_OFFSET);
                 if (dt < budget)
+                {
+                    if (g_config.logMotionFires)
+                    {
+                        const uint32_t motion = *reinterpret_cast<const uint32_t*>(
+                                                    static_cast<char*>(self) + MOTION_FLAGS_OFFSET);
+                        LogMotionFire(self, flags, motion, velocity, lengthSq, budget);
+                    }
                     dt = budget;              // consume the whole budget this frame
+                }
             }
         }
     }
