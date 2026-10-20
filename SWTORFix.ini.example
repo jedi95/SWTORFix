@@ -18,9 +18,9 @@ FlushMillis=1000
 
 [teleport]
 ; Velocity above which motion is treated as a teleport, in units/s (1 unit = 0.1 m).
-; Walking is ~0.4, teleports measure ~16.6. Clamped to 1..50.
-; Raise this if a charge or leap is being caught and looks choppy.
-MinVelocity=5
+; Teleports measure ~16.6; Bestia's Force Charge peaks at 5.8 over 111 samples.
+; Clamped to 1..50. Lower this if teleports stop being caught.
+MinVelocity=10
 
 [debug]
 ; Report every snap decision through OutputDebugString, visible in DebugView.

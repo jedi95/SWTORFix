@@ -21,7 +21,7 @@ LogFlush=1
 FlushMillis=1000
 
 [teleport]
-MinVelocity=5
+MinVelocity=10
 
 [debug]
 LogFires=0
@@ -65,9 +65,13 @@ Measured on solo Dread Master Tyrans, same fight, same analysis:
 | exact landings (<5 cm) | 24 (52%) | **43 (100%)** |
 | worst residual | 4.23 m | **0.00 m** |
 
-Threshold is 5.0 units/s (50 m/s): walking is ~0.4 (4 m/s), teleports ~16.6
-(166 m/s), so it separates them with margin. If another fast motion — a charge or
-a leap — is being caught and looks choppy, raise `[teleport] MinVelocity`. Setting
+The threshold is 10 units/s (100 m/s). Teleports measure ~16.6 units/s (166 m/s).
+Bestia's Force Charge — the fastest non-teleport motion measured so far — runs at
+1.5–5.8 units/s across 111 samples (14.8–57.9 m/s over 0.49–0.83 s), and its speed
+scales with distance, so the long charges are the fast ones. 10 sits above every
+charge observed and below every teleport.
+
+`[teleport] MinVelocity` overrides it — lower it if teleports stop being caught.
 `[debug] LogFires=1` reports every snap decision with the actor's flags and
 velocity through `OutputDebugString`, so you can see exactly what is being caught.
 

@@ -37,7 +37,7 @@ struct Config
     bool logMotionFires;          // diagnostics: report every snap decision
 };
 
-Config g_config = { true, true, true, 1.0f, 25.0f, false };
+Config g_config = { true, true, true, 1.0f, 100.0f, false };
 
 void LoadConfig(HMODULE self)
 {
@@ -71,10 +71,11 @@ void LoadConfig(HMODULE self)
     g_config.logFlushSeconds = flushMillis / 1000.0f;
 
     // Teleport velocity threshold, in memory units per second (1 unit = 0.1 m).
-    // Walking is ~0.4 and teleports measure ~16.6; the default of 5 leaves room
-    // on both sides. Raise it if another fast motion (a charge or leap) is being
-    // caught and looks choppy.
-    int minVelocity = GetPrivateProfileIntA("teleport", "MinVelocity", 5, path);
+    // Teleports measure ~16.6 units/s. Measured Force Charge leaps top out at
+    // 5.8 units/s (111 samples, 14.8-57.9 m/s over 0.49-0.83 s), so the default
+    // of 10 sits clear above every leap and well under a teleport. Lower it if
+    // teleports stop being caught; raise it if another fast motion is caught.
+    int minVelocity = GetPrivateProfileIntA("teleport", "MinVelocity", 10, path);
     if (minVelocity < 1) minVelocity = 1;
     if (minVelocity > 50) minVelocity = 50;
     g_config.motionThresholdSq = static_cast<float>(minVelocity) * static_cast<float>(minVelocity);
