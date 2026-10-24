@@ -71,6 +71,9 @@ Bestia's Force Charge — the fastest non-teleport motion measured so far — ru
 scales with distance, so the long charges are the fast ones. 10 sits above every
 charge observed and below every teleport.
 
+Verified in game on a council run: at 10, Bestia's Force Charge arcs smoothly and
+teleports still land exactly.
+
 `[teleport] MinVelocity` overrides it — lower it if teleports stop being caught.
 `[debug] LogFires=1` reports every snap decision with the actor's flags and
 velocity through `OutputDebugString`, so you can see exactly what is being caught.
@@ -85,6 +88,17 @@ to install on an unrecognised client:
 Note the entry point is `0x604F20`, not `0x604F22` — `0x604F22` is the second
 instruction, and hooking there skips the `push rbx`, leaving the stack misaligned
 and faulting on the first aligned SSE spill.
+
+## LogFlush
+
+The client flushes its combat log on a three-second countdown. This job patches the reset
+constant so the countdown is `[log] FlushMillis` long instead — 1000 ms by default — cutting
+worst-case latency for anything parsing the log live from about 3 s to about 1.
+
+Nothing is added, removed or reordered: the data is in the file's buffer either way, and the
+CRT still flushes on its own when its 4096-byte buffer fills.
+
+Verified in game: the log now updates on a ~1 s cadence.
 
 ## Build
 
