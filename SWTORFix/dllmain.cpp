@@ -38,14 +38,14 @@ namespace {
 // ---------------------------------------------------------------------------
 void Logf(const char* fmt, ...)
 {
-    char buf[320];
+    char body[320];
+    char line[360];
     va_list args;
     va_start(args, fmt);
-    _vsnprintf_s(buf, sizeof(buf), _TRUNCATE, fmt, args);
+    _vsnprintf_s(body, sizeof(body), _TRUNCATE, fmt, args);
     va_end(args);
-    OutputDebugStringA("[SWTORFix] ");
-    OutputDebugStringA(buf);
-    OutputDebugStringA("\n");
+    sprintf_s(line, sizeof(line), "[SWTORFix] %s\n", body);
+    OutputDebugStringA(line);           // one call, or the line splits in DebugView
 }
 
 // ---------------------------------------------------------------------------

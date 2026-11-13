@@ -155,7 +155,7 @@ Each job logs one line to `OutputDebugString` when it installs, starting with th
 build stamp, so the first thing to check after a game patch is which binary the DLL is in:
 
 ```
-[SWTORFix] client build stamp 6AF60939, image 0x1D44000 bytes
+[SWTORFix] client build stamp 6AF60939, image 0x21D8000 bytes
 [SWTORFix] BlockDisplayChanges installed
 [SWTORFix] LogFlush set to 1.000 s at RVA 0x530A52 (known RVA)
 [SWTORFix] TeleportSnap installed at RVA 0x604F20 (known RVA), threshold 10 units/s
