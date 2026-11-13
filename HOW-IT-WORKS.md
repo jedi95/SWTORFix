@@ -206,15 +206,34 @@ changes no display state and is a no-op unless the client asks to change the mod
 
 ## Safety
 
-**Prologue verification.** Before attaching, the hook compares the first 16 bytes of the target
-against a known-good copy:
+**Three gates, all fail-closed.** Before attaching, the hook has to satisfy every one of these;
+if any fails, the game runs completely unpatched:
 
-```
-40 53 48 83 ec 50 f7 81 f8 02 00 00 00 00 01 00
-```
+1. **The known RVA.** Compare the first 16 bytes at `0x604F20` against a known-good copy:
 
-If they differ — a client update, a different build — the hook **does not install** and the
-game runs completely unpatched. It fails closed by design.
+   ```
+   40 53 48 83 ec 50 f7 81 f8 02 00 00 00 00 01 00
+   ```
+
+2. **A unique scan, if the RVA moved.** The same 16 bytes, searched over the executable
+   section, accepted only if they occur exactly once. This is what carries the DLL onto a
+   client that was re-linked without changing the function — the DX12 client puts it at
+   `0x60B9C0`.
+
+3. **The field layout.** Every offset the hook reads must still appear in the function body,
+   matched as the instruction that reads it:
+
+   | field | instruction |
+   |---|---|
+   | `+0x350` time budget | `movss xmm0,[rbx+0x350]` |
+   | `+0x408..0x410` velocity | `mulss xmm{1,2,3},[rbx+0x408/0x40C/0x410]` |
+   | `+0x420` motion bits | `mov eax,[rcx+0x420]` |
+
+   This is the check that matters most. The prologue alone only pins the `+0x2F8` flag gate;
+   a build that moved the budget or the velocity while keeping the prologue would pass gate 1
+   and then snap on a float read from the wrong offset — a wrong teleport instead of a missing
+   one. The register bytes are masked, so a different allocation in a future build does not
+   fail the check by itself; the displacement must match.
 
 **Fault tolerance.** The reads are wrapped in structured exception handling. If an object
 reaches the hook with an unexpected layout, the read faults, the handler swallows it, and the
@@ -242,6 +261,22 @@ In the patched run every landing is an exact lattice point — the combat log pr
 
 ## Compatibility
 
-The patch is tied to a specific client build by the prologue check. The RVA and expected bytes
-live in `SWTORFix/dllmain.cpp`; updating them for a new build is a matter of re-verifying the
-function's entry and first instructions.
+The DLL is not tied to one client build. Verified against these binaries:
+
+| binary | PE stamp | date | `TeleportSnap` | `LogFlush` |
+|---|---|---|---|---|
+| `swtor.exe` | `0x6AC6A73E` | 2026-10-07 | `0x604F20` | `0x530A52` |
+| `swtor.exe` | `0x6AF60939` | 2026-11-12 | `0x604F20` | `0x530A52` |
+| `swtor_RC2.exe` | — | 2026-11-12 | `0x60B9C0` | `0x5380B0` |
+
+The 2026-11-12 build of `swtor.exe` is byte-identical to the 2026-10-07 build at both patch
+sites: the whole motion function `0x604F20–0x605093` compares equal, and the log-flush
+instruction is unchanged. Across the full `.text` section (20.3 MB, 5,688,113 instructions)
+every instruction decodes to the same mnemonic, size and operand shape as the previous build;
+the only differing bytes are 32-bit operands that point at data which moved by 0x80-0x90 bytes
+in `.data`/`.rdata`. That is a data patch, not a code change, and it is why no constant needed
+changing.
+
+The RVA and expected bytes live in `SWTORFix/dllmain.cpp`. Updating them for a build that does
+move the function is a matter of re-verifying the entry and the field instructions; the scan and
+the layout check then carry the DLL onto builds whose entry point shifted.

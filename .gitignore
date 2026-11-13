@@ -4,6 +4,8 @@
 /SWTORFix/Win32/
 /SWTORFix/Debug/
 /SWTORFix/Release/
+/x64/
+/Win32/
 *.user
 *.suo
 *.sdf

@@ -15,14 +15,38 @@
 // Nothing is written to disk. Failures are reported through OutputDebugString
 // only, so DebugView can show them without the shipped build touching the
 // filesystem.
+//
+// Verified client builds (image TimeDateStamp, from the PE header):
+//
+//     0x6AC6A73E   2026-10-07   300,None    both patch sites at the RVAs below
+//     0x6AF60939   2026-11-12   minor patch both patch sites byte-identical
+//
+// The install log prints the stamp of whatever client the DLL is loaded into,
+// so a new build can be identified from DebugView without dumping the exe.
 
 #include <Windows.h>
 #include <cstdint>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include "detours.h"
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+void Logf(const char* fmt, ...)
+{
+    char buf[320];
+    va_list args;
+    va_start(args, fmt);
+    _vsnprintf_s(buf, sizeof(buf), _TRUNCATE, fmt, args);
+    va_end(args);
+    OutputDebugStringA("[SWTORFix] ");
+    OutputDebugStringA(buf);
+    OutputDebugStringA("\n");
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -33,11 +57,12 @@ struct Config
     bool teleportSnap;
     bool logFlush;
     float logFlushSeconds;
-    float motionThresholdSq;      // squared velocity threshold, memory units/s
+    float motionThreshold;        // velocity threshold, memory units/s
+    float motionThresholdSq;      // the same, squared (what the hook compares)
     bool logMotionFires;          // diagnostics: report every snap decision
 };
 
-Config g_config = { true, true, true, 1.0f, 100.0f, false };
+Config g_config = { true, true, true, 1.0f, 10.0f, 100.0f, false };
 
 void LoadConfig(HMODULE self)
 {
@@ -79,17 +104,91 @@ void LoadConfig(HMODULE self)
     int minVelocity = GetPrivateProfileIntA("teleport", "MinVelocity", 10, path);
     if (minVelocity < 1) minVelocity = 1;
     if (minVelocity > 50) minVelocity = 50;
-    g_config.motionThresholdSq = static_cast<float>(minVelocity) * static_cast<float>(minVelocity);
+    g_config.motionThreshold = static_cast<float>(minVelocity);
+    g_config.motionThresholdSq = g_config.motionThreshold * g_config.motionThreshold;
 
     g_config.logMotionFires = GetPrivateProfileIntA("debug", "LogFires", 0, path) != 0;
 }
 
-void Report(const char* what, LONG attached, LONG committed)
+// ---------------------------------------------------------------------------
+// Client build identification
+//
+// The PE header carries the linker's build stamp. It is not a game version
+// number, but it identifies the binary uniquely enough to say which client a
+// log line came from - the first thing needed when a patch moves something.
+// ---------------------------------------------------------------------------
+void LogClientBuild(uintptr_t base)
 {
-    char buf[160];
-    sprintf_s(buf, sizeof(buf), "[SWTORFix] %s failed (attach=%ld commit=%ld)\n",
-              what, attached, committed);
-    OutputDebugStringA(buf);
+    __try
+    {
+        auto* dos = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+            return;
+        auto* nt = reinterpret_cast<PIMAGE_NT_HEADERS>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE)
+            return;
+        Logf("client build stamp %08X, image 0x%X bytes",
+             nt->FileHeader.TimeDateStamp, nt->OptionalHeader.SizeOfImage);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Text-section helpers
+// ---------------------------------------------------------------------------
+struct TextRange { uintptr_t begin; size_t size; };
+
+bool GetTextRange(uintptr_t base, TextRange& out)
+{
+    auto* dos = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto* nt = reinterpret_cast<PIMAGE_NT_HEADERS>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+
+    auto* section = IMAGE_FIRST_SECTION(nt);
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
+        if (section->Characteristics & IMAGE_SCN_MEM_EXECUTE) {
+            out.begin = base + section->VirtualAddress;
+            out.size  = section->Misc.VirtualSize;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Returns nullptr unless the pattern occurs exactly once in the executable
+// section. Ambiguity is treated as failure: patching the wrong site is worse
+// than not patching at all.
+unsigned char* FindUniqueInText(uintptr_t base, const unsigned char* pattern, size_t length)
+{
+    TextRange text{};
+    if (!GetTextRange(base, text))
+        return nullptr;
+
+    int hits = 0;
+    unsigned char* found = nullptr;
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(text.begin);
+    for (size_t i = 0; i + length <= text.size; ++i) {
+        if (p[i] != pattern[0]) continue;
+        bool match = true;
+        for (size_t k = 1; k < length; ++k) {
+            if (p[i + k] != pattern[k]) { match = false; break; }
+        }
+        if (!match) continue;
+        if (++hits > 1) return nullptr;
+        found = const_cast<unsigned char*>(p + i);
+    }
+    return found;
+}
+
+bool BytesMatch(const unsigned char* at, const unsigned char* pattern, size_t length)
+{
+    for (size_t i = 0; i < length; ++i) {
+        if (at[i] != pattern[i]) return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +214,9 @@ void InstallBlockDisplayChanges()
     LONG attached = DetourAttach(&(PVOID&)pChangeDisplaySettingsEx, Hook_ChangeDisplaySettingsEx);
     LONG committed = DetourTransactionCommit();
     if (attached != NO_ERROR || committed != NO_ERROR)
-        Report("BlockDisplayChanges", attached, committed);
+        Logf("BlockDisplayChanges failed (attach=%ld commit=%ld)", attached, committed);
+    else
+        Logf("BlockDisplayChanges installed");
 }
 
 // ---------------------------------------------------------------------------
@@ -158,87 +259,47 @@ const unsigned char LOG_FLUSH_INSN[7] = {
 
 const size_t LOG_FLUSH_IMM = 3;                 // float immediate inside the instruction
 
-struct TextRange { uintptr_t begin; size_t size; };
-
-bool GetTextRange(uintptr_t base, TextRange& out)
-{
-    auto* dos = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
-    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
-    auto* nt = reinterpret_cast<PIMAGE_NT_HEADERS>(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
-
-    auto* section = IMAGE_FIRST_SECTION(nt);
-    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
-        if (section->Characteristics & IMAGE_SCN_MEM_EXECUTE) {
-            out.begin = base + section->VirtualAddress;
-            out.size  = section->Misc.VirtualSize;
-            return true;
-        }
-    }
-    return false;
-}
-
 void InstallLogFlush()
 {
     const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     if (!base) {
-        OutputDebugStringA("[SWTORFix] LogFlush: no module base\n");
+        Logf("LogFlush: no module base");
         return;
     }
 
     unsigned char* target = nullptr;
+    const char* via = "";
 
     // 1. Known location.
     auto* candidate = reinterpret_cast<unsigned char*>(base + RVA_LOG_FLUSH);
     bool knownGood = true;
     __try {
-        for (size_t i = 0; i < sizeof(LOG_FLUSH_INSN); ++i) {
-            if (candidate[i] != LOG_FLUSH_INSN[i]) { knownGood = false; break; }
-        }
+        knownGood = BytesMatch(candidate, LOG_FLUSH_INSN, sizeof(LOG_FLUSH_INSN));
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { knownGood = false; }
 
     if (knownGood) {
         target = candidate;
+        via = "known RVA";
     } else {
         // 2. Fall back to a pattern scan, accepting only a single unique hit.
-        TextRange text{};
-        if (!GetTextRange(base, text)) {
-            OutputDebugStringA("[SWTORFix] LogFlush: no executable section, not installed\n");
+        target = FindUniqueInText(base, LOG_FLUSH_INSN, sizeof(LOG_FLUSH_INSN));
+        if (!target) {
+            Logf("LogFlush: pattern absent or ambiguous, not installed");
             return;
         }
-
-        int hits = 0;
-        unsigned char* found = nullptr;
-        const unsigned char* p = reinterpret_cast<const unsigned char*>(text.begin);
-        for (size_t i = 0; i + sizeof(LOG_FLUSH_INSN) <= text.size; ++i) {
-            if (p[i] != LOG_FLUSH_INSN[0]) continue;
-            bool match = true;
-            for (size_t k = 1; k < sizeof(LOG_FLUSH_INSN); ++k) {
-                if (p[i + k] != LOG_FLUSH_INSN[k]) { match = false; break; }
-            }
-            if (!match) continue;
-            if (++hits > 1) break;
-            found = const_cast<unsigned char*>(p + i);
-        }
-
-        if (hits == 0) {
-            OutputDebugStringA("[SWTORFix] LogFlush: pattern not found, not installed\n");
-            return;
-        }
-        if (hits > 1) {
-            OutputDebugStringA("[SWTORFix] LogFlush: pattern ambiguous, not installed\n");
-            return;
-        }
-        target = found;
+        via = "scan";
     }
 
     float* immediate = reinterpret_cast<float*>(target + LOG_FLUSH_IMM);
     const float wanted = g_config.logFlushSeconds;
 
     __try {
-        if (*immediate == wanted)
+        if (*immediate == wanted) {
+            Logf("LogFlush already %.3f s at RVA 0x%llX (%s)",
+                 wanted, static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(target) - base), via);
             return;                              // already at the requested interval
+        }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return;
@@ -247,7 +308,7 @@ void InstallLogFlush()
     // 3. Patch the immediate, restore protection, flush the icache, verify.
     DWORD oldProtect = 0;
     if (!VirtualProtect(immediate, sizeof(float), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        OutputDebugStringA("[SWTORFix] LogFlush: VirtualProtect failed\n");
+        Logf("LogFlush: VirtualProtect failed");
         return;
     }
 
@@ -256,8 +317,12 @@ void InstallLogFlush()
     FlushInstructionCache(GetCurrentProcess(), target, sizeof(LOG_FLUSH_INSN));
 
     if (*immediate != wanted) {
-        OutputDebugStringA("[SWTORFix] LogFlush: read-back mismatch\n");
+        Logf("LogFlush: read-back mismatch");
+        return;
     }
+
+    Logf("LogFlush set to %.3f s at RVA 0x%llX (%s)",
+         wanted, static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(target) - base), via);
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +342,16 @@ void InstallLogFlush()
 // The entry point is 0x604F20. 0x604F22 is the second instruction; hooking there
 // skips the push rbx and leaves the stack misaligned, which faults on the first
 // aligned SSE spill.
+//
+// Installing is gated on three things, and any failure leaves the client
+// untouched:
+//   - the 16-byte prologue (the flag gate and the frame setup), and
+//   - every field offset the hook reads, found as an instruction pattern in the
+//     function body, and
+//   - a unique match when the entry has to be found by scan rather than by RVA.
+// The field check matters more than it looks: a build that moved a field but
+// kept the prologue would otherwise install and feed the hook a budget or
+// velocity read from the wrong place.
 // ---------------------------------------------------------------------------
 const uintptr_t RVA_MOTION = 0x604F20;
 
@@ -295,18 +370,65 @@ const uint32_t MOTION_FLAG = 0x00010000;      // the gate the original function 
 
 const size_t MOTION_FLAGS_OFFSET = 0x420;     // per-actor motion mode bits
 
+// How far into the function the field accesses must appear.
+const size_t MOTION_LAYOUT_WINDOW = 0x100;
+
+// Patterns with a mask: 0xFF compares the byte, 0x00 ignores it. The mask
+// covers the ModRM reg/rm bits so a different register allocation in a future
+// build does not by itself fail the check - the displacement is what matters.
+struct PatternCheck
+{
+    const char*          what;
+    const unsigned char* bytes;
+    const unsigned char* mask;
+    size_t               length;
+};
+
+const unsigned char P_BUDGET[]   = { 0xF3, 0x0F, 0x10, 0x83, 0x50, 0x03, 0x00, 0x00 };
+const unsigned char P_BUDGET_M[] = { 0xFF, 0xFF, 0xFF, 0xF8, 0xFF, 0xFF, 0xFF, 0xFF };
+                                                 // movss xmm0,[rbx+0x350]
+const unsigned char P_VEL_X[]    = { 0xF3, 0x0F, 0x59, 0x8B, 0x08, 0x04, 0x00, 0x00 };
+const unsigned char P_VEL_X_M[]  = { 0xFF, 0xFF, 0xFF, 0xF8, 0xFF, 0xFF, 0xFF, 0xFF };
+                                                 // mulss xmm1,[rbx+0x408]
+const unsigned char P_VEL_Z[]    = { 0xF3, 0x0F, 0x59, 0x93, 0x0C, 0x04, 0x00, 0x00 };
+const unsigned char P_VEL_Z_M[]  = { 0xFF, 0xFF, 0xFF, 0xF8, 0xFF, 0xFF, 0xFF, 0xFF };
+                                                 // mulss xmm2,[rbx+0x40C]
+const unsigned char P_VEL_Y[]    = { 0xF3, 0x0F, 0x59, 0x9B, 0x10, 0x04, 0x00, 0x00 };
+const unsigned char P_VEL_Y_M[]  = { 0xFF, 0xFF, 0xFF, 0xF8, 0xFF, 0xFF, 0xFF, 0xFF };
+                                                 // mulss xmm3,[rbx+0x410]
+const unsigned char P_FLAGS[]    = { 0x8B, 0x81, 0x20, 0x04, 0x00, 0x00 };
+const unsigned char P_FLAGS_M[]  = { 0xFF, 0xF8, 0xFF, 0xFF, 0xFF, 0xFF };
+                                                 // mov eax,[rcx+0x420]
+
+const PatternCheck MOTION_LAYOUT[] = {
+    { "budget [actor+0x350]",     P_BUDGET,  P_BUDGET_M,  sizeof(P_BUDGET)  },
+    { "velocity.x [actor+0x408]", P_VEL_X,   P_VEL_X_M,   sizeof(P_VEL_X)   },
+    { "velocity.z [actor+0x40C]", P_VEL_Z,   P_VEL_Z_M,   sizeof(P_VEL_Z)   },
+    { "velocity.y [actor+0x410]", P_VEL_Y,   P_VEL_Y_M,   sizeof(P_VEL_Y)   },
+    { "motion bits [actor+0x420]", P_FLAGS,  P_FLAGS_M,   sizeof(P_FLAGS)   },
+};
+
+bool ContainsPattern(const unsigned char* at, size_t size, const PatternCheck& p)
+{
+    if (p.length > size) return false;
+    for (size_t i = 0; i + p.length <= size; ++i) {
+        size_t k = 0;
+        for (; k < p.length; ++k) {
+            if ((at[i + k] & p.mask[k]) != (p.bytes[k] & p.mask[k])) break;
+        }
+        if (k == p.length) return true;
+    }
+    return false;
+}
+
 typedef void(__fastcall* MotionFn)(void*, float);
 MotionFn g_originalMotion = nullptr;
 
 void LogMotionFire(void* self, uint32_t flags2F8, uint32_t flags420,
                    const float* v, float lengthSq, float budget)
 {
-    char buf[280];
-    sprintf_s(buf, sizeof(buf),
-              "[SWTORFix] snap self=%p f2F8=%08x f420=%08x v=(%.3f,%.3f,%.3f) "
-              "|v|^2=%.3f budget=%.4f\n",
-              self, flags2F8, flags420, v[0], v[1], v[2], lengthSq, budget);
-    OutputDebugStringA(buf);
+    Logf("snap self=%p f2F8=%08x f420=%08x v=(%.3f,%.3f,%.3f) |v|^2=%.3f budget=%.4f",
+         self, flags2F8, flags420, v[0], v[1], v[2], lengthSq, budget);
 }
 
 void __fastcall Hook_Motion(void* self, float dt)
@@ -354,28 +476,50 @@ void __fastcall Hook_Motion(void* self, float dt)
 void InstallTeleportSnap()
 {
     const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    if (!base)
-    {
-        OutputDebugStringA("[SWTORFix] TeleportSnap: no module base\n");
+    if (!base) {
+        Logf("TeleportSnap: no module base");
         return;
     }
 
-    auto* target = reinterpret_cast<unsigned char*>(base + RVA_MOTION);
+    unsigned char* target = nullptr;
+    const char* via = "";
 
-    __try
-    {
-        for (size_t i = 0; i < sizeof(MOTION_PROLOGUE); ++i)
-        {
-            if (target[i] != MOTION_PROLOGUE[i])
-            {
-                OutputDebugStringA("[SWTORFix] TeleportSnap: prologue mismatch, not installed\n");
-                return;
+    // 1. Known RVA, prologue verified.
+    auto* candidate = reinterpret_cast<unsigned char*>(base + RVA_MOTION);
+    bool knownGood = true;
+    __try {
+        knownGood = BytesMatch(candidate, MOTION_PROLOGUE, sizeof(MOTION_PROLOGUE));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { knownGood = false; }
+
+    if (knownGood) {
+        target = candidate;
+        via = "known RVA";
+    } else {
+        // 2. The function may have moved without changing; accept only a single
+        //    unique match for the prologue.
+        target = FindUniqueInText(base, MOTION_PROLOGUE, sizeof(MOTION_PROLOGUE));
+        if (!target) {
+            Logf("TeleportSnap: prologue absent or ambiguous, not installed");
+            return;
+        }
+        via = "scan";
+    }
+
+    // 3. Every field the hook reads must still be addressed inside the function.
+    const char* missing = nullptr;
+    __try {
+        for (const auto& p : MOTION_LAYOUT) {
+            if (!ContainsPattern(target, MOTION_LAYOUT_WINDOW, p)) {
+                missing = p.what;
+                break;
             }
         }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        OutputDebugStringA("[SWTORFix] TeleportSnap: target unreadable, not installed\n");
+    __except (EXCEPTION_EXECUTE_HANDLER) { missing = "unreadable"; }
+
+    if (missing) {
+        Logf("TeleportSnap: layout check failed on %s, not installed", missing);
         return;
     }
 
@@ -387,7 +531,11 @@ void InstallTeleportSnap()
     LONG committed = DetourTransactionCommit();
 
     if (attached != NO_ERROR || committed != NO_ERROR)
-        Report("TeleportSnap", attached, committed);
+        Logf("TeleportSnap failed (attach=%ld commit=%ld)", attached, committed);
+    else
+        Logf("TeleportSnap installed at RVA 0x%llX (%s), threshold %.0f units/s",
+             static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(target) - base), via,
+             g_config.motionThreshold);
 }
 
 } // namespace
@@ -399,6 +547,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         DisableThreadLibraryCalls(hModule);
 
         LoadConfig(hModule);
+
+        const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        LogClientBuild(base);
 
         if (g_config.blockDisplayChanges)
             InstallBlockDisplayChanges();

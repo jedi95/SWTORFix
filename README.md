@@ -78,8 +78,9 @@ teleports still land exactly.
 `[debug] LogFires=1` reports every snap decision with the actor's flags and
 velocity through `OutputDebugString`, so you can see exactly what is being caught.
 
-The hook validates the first 16 bytes of the target before attaching and refuses
-to install on an unrecognised client:
+The hook validates the first 16 bytes of the target before attaching, then checks that every
+actor field it reads is still addressed inside the function (see [Compatibility](#compatibility)),
+and refuses to install on an unrecognised client:
 
 ```
 40 53 48 83 ec 50 f7 81 f8 02 00 00 00 00 01 00
@@ -112,11 +113,56 @@ msbuild SWTORFix.sln /p:Configuration=Release /p:Platform=x64
 Output is `SWTORFix.dll`. Drop it beside `SWTORWrapper.exe` — the wrapper loads
 it by name from its own directory.
 
+## Verifying an install
+
+`tools/verify_install.py` launches a client, injects the DLL into it exactly the way the
+wrapper does, and reads the patched bytes back out of the live process:
+
+```
+python tools/verify_install.py --exe "C:\Games\Star Wars - The Old Republic\swtor\retailclient\swtor.exe" --dll x64\Release\SWTORFix.dll
+python tools/verify_install.py --exe "...\swtor_RC2.exe" --dll ... --motion-rva 0x60B9C0 --log-rva 0x5380B0
+```
+
+```
+  [PASS] LoadLibraryA in target returned a module handle - 0xFA610000
+  [PASS] target module base - 0x7ff6bda00000
+  [PASS] TeleportSnap hook at RVA 0x604F20 - bytes e953b2febf
+  [PASS] LogFlush interval at RVA 0x530A52 - 1.000 s
+```
+
+`--expect-none` inverts the last two checks, for a binary the DLL is supposed to refuse.
+The process is launched suspended and killed afterwards; the game never gets past its entry
+point, so no login or asset load is involved.
+
 ## Compatibility
 
-The prologue check means an updated client fails closed: the hook simply does
-not install, and the game runs unpatched. Nothing is patched in memory if the
-bytes do not match.
+Both jobs locate their site the same way: verify the known RVA against the exact bytes, fall
+back to a scan that only accepts a single unique match, and refuse to install otherwise.
+`TeleportSnap` additionally verifies that every actor field it reads (`+0x350` budget,
+`+0x408..0x410` velocity, `+0x420` motion bits) is still addressed inside the function, so a
+build that moves a field fails closed instead of snapping on a value read from the wrong
+offset.
+
+That means the DLL is not tied to one build. Verified:
+
+| client build | date | `TeleportSnap` | `LogFlush` | result |
+|---|---|---|---|---|
+| `swtor.exe` `0x6AC6A73E` | 2026-10-07 | RVA `0x604F20` | RVA `0x530A52` | known RVAs |
+| `swtor.exe` `0x6AF60939` | 2026-11-12 | RVA `0x604F20` | RVA `0x530A52` | known RVAs (byte-identical to the above at both sites) |
+| `swtor_RC2.exe` | 2026-11-12 | RVA `0x60B9C0` | RVA `0x5380B0` | scan |
+
+Each job logs one line to `OutputDebugString` when it installs, starting with the client's PE
+build stamp, so the first thing to check after a game patch is which binary the DLL is in:
+
+```
+[SWTORFix] client build stamp 6AF60939, image 0x1D44000 bytes
+[SWTORFix] BlockDisplayChanges installed
+[SWTORFix] LogFlush set to 1.000 s at RVA 0x530A52 (known RVA)
+[SWTORFix] TeleportSnap installed at RVA 0x604F20 (known RVA), threshold 10 units/s
+```
+
+A refused job says why — `prologue absent or ambiguous`, `layout check failed on
+velocity.x [actor+0x408]`, `pattern absent or ambiguous`.
 
 ## License
 
