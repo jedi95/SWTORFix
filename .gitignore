@@ -12,3 +12,4 @@
 *.opensdf
 *.VC.db
 ipch/
+tools/__pycache__/
